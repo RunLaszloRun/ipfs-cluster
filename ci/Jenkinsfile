@@ -1,1 +1,1 @@
-golang("go test -tags silent -v ./...")
+golang("go test -v .")
