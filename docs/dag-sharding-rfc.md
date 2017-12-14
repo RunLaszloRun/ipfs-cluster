@@ -51,14 +51,29 @@ One requirement of moving much farther forward is to pin down more precisely the
 
 TODO -- further investigation into querying workflows, more time spent understanding certain use cases.  As far as I know the current querying is all done by discovering content on the ipfs nodes in the cluster.  Is this all we are trying to support?  What about giving the cluster ipfs proxy address as an ipfs address?  Are we thinking about searching (and hence indexing) cluster content? There is a lot here that I don't know.
 
+#### Supporting more complex unixfs datastructures
+- files are described above, now what about directories?
+- TODO -- research why the wikipedia mirror needs the experimental sharded directory feature, how this works, and if there is special functionality in ipfs that we need to use to get files sharded (don't think so but good to check)
+
 ### Fault tolerant RAID replication modes with small unixfs files
+- Big difference is that data needs a transformation before storage
+- a few places this could go, custom chunker, custom dag layout
+- requires we answer some questions about how aware users are of the replication format
+- drives home the point that allocators need a lot of awareness regarding the dag they are pinning, for RAID 4/5 the parity blocks need to be treated separately (TODO -- understand more about this).  Using FEC we actually have an easier time because parity distributes with every block
+- Since we are storing parity checking/correction information that leads to the natural question of how cluster will support reconstructing data that is in error.  Figuring this out is related to the interface and workflow questions; how are users going to fetch data?  block by block? all at once?
+- ipfs-cluster can and should also make use of fault tolerant replication of data in the event of a node failure.  In this case the missing data block can be reconstructed (potentially this is going to need all of the other blocks for a big slowdown) to create the missing block from the existing ones and then repin.
+- Thinking that a lot of RAID modes will not be useful, depending on whether they just check for corruption, because ipfs does integrity checks on fetch
 
 ### Fault tolerant RAID replication modes with small general dags
-
+- whereas above the question is how to modify the importing process (chunker, specialized dag layout), now the question is more about ipld transformations.  A huge TODO is figuring out exactly where the replication parity information should go to transform a dag into an error correcting or more fault tolerant dag.
+- this is somewhat getting ahead of itself because ipfs currently doesn't support adding ipld dags to the repo.  Sharding dags for fault tolerance may not have a motivating use case depending on the extent to which ipld dag storage is supported.  Also possible that unforseen cleverness in the dag storage model might make fault tolerant sharding of dags less useful than I am expecting.
+- important to follow along with the CAR format's development to make sense of how this might all fit together
 
 ## Large dags
 
 ### Collaborative importing
+
+
 
 ### Arbitrary dag considerations
 
