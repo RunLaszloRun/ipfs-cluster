@@ -159,6 +159,11 @@ func TestConsensusAddPeer(t *testing.T) {
 }
 
 func TestConsensusRmPeer(t *testing.T) {
+	logging.SetLogLevel("consensus", "debug")
+	logging.SetLogLevel("raft", "debug")
+	logging.SetLogLevel("p2p-gorpc", "debug")
+	logging.SetLogLevel("libp2p-raft", "debug")
+
 	cc := testingConsensus(t, p2pPort)
 	cc2 := testingConsensus(t, p2pPortAlt)
 	defer cleanRaft(p2pPort)
