@@ -330,6 +330,7 @@ func TestClustersPeerRemoveReallocsPins(t *testing.T) {
 		checkErr(t, err)
 		err = leader.Pin(api.PinCid(h))
 		checkErr(t, err)
+		time.Sleep(time.Second) // time to update the metrics
 	}
 
 	delay()
