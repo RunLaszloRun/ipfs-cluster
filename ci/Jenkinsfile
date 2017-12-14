@@ -1,1 +1,1 @@
-golang("go test -v .")
+golang("go test -v ./...")
