@@ -22,7 +22,7 @@ var testingClusterCfg = []byte(`{
     "state_sync_interval": "1m0s",
     "ipfs_sync_interval": "2m10s",
     "replication_factor": -1,
-    "monitor_ping_interval": "2s"
+    "monitor_ping_interval": "1s"
 }
 `)
 
@@ -69,7 +69,7 @@ var testingTrackerCfg = []byte(`
 `)
 
 var testingMonCfg = []byte(`{
-    "check_interval": "2s"
+    "check_interval": "1s"
 }`)
 
 var testingDiskInfCfg = []byte(`{
