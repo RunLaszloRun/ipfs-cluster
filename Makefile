@@ -68,7 +68,7 @@ check:
 	golint -min_confidence 0.3 ./...
 
 test: deps
-	go test -tags silent -v ./...
+	go test -tags silent -v .
 
 test_sharness: $(sharness)
 	@sh sharness/run-sharness-tests.sh
