@@ -32,10 +32,10 @@ import (
 //TestClusters*
 var (
 	// number of clusters to create
-	nClusters = flag.Int("nclusters", 6, "number of clusters to use")
+	nClusters = *flag.Int("nclusters", 6, "number of clusters to use")
 
 	// number of pins to pin/unpin/check
-	nPins = flag.Int("npins", 500, "number of pins to pin/unpin/check")
+	nPins = *flag.Int("npins", 500, "number of pins to pin/unpin/check")
 
 	// ports
 	clusterPort   = 20000
