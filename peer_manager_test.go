@@ -277,6 +277,7 @@ func TestClustersPeerRemoveLeader(t *testing.T) {
 		if more {
 			t.Error("should be done")
 		}
+		time.Sleep(time.Second)
 	}
 }
 
