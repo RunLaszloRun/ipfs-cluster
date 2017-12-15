@@ -1,6 +1,7 @@
 package ipfscluster
 
 import (
+	"flag"
 	"fmt"
 	"math/rand"
 	"os"
@@ -31,10 +32,10 @@ import (
 //TestClusters*
 var (
 	// number of clusters to create
-	nClusters = 6
+	nClusters = flag.Int("nclusters", 6, "number of clusters to use")
 
 	// number of pins to pin/unpin/check
-	nPins = 500
+	nPins = flag.Int("npins", 500, "number of pins to pin/unpin/check")
 
 	// ports
 	clusterPort   = 20000

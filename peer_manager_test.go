@@ -29,6 +29,7 @@ func peerManagerClusters(t *testing.T) ([]*Cluster, []*test.IpfsMock) {
 		}(i)
 	}
 	wg.Wait()
+	delay()
 	return cls, mocks
 }
 
