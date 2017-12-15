@@ -1,1 +1,1 @@
-golang("go test -tags silent -v ./consensus/raft")
+golang("go test -tags silent -v ./...")

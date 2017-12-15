@@ -41,6 +41,7 @@ func makeTestingHost(t *testing.T, port int) host.Host {
 	ps := peerstore.NewPeerstore()
 	ps.AddPubKey(pid, pub)
 	ps.AddPrivKey(pid, priv)
+	ps.AddAddr(pid, maddr, peerstore.PermanentAddrTTL)
 	n, _ := swarm.NewNetwork(
 		context.Background(),
 		[]ma.Multiaddr{maddr},
@@ -171,8 +172,9 @@ func TestConsensusRmPeer(t *testing.T) {
 	defer cc.Shutdown()
 	defer cc2.Shutdown()
 
-	addr, _ := ma.NewMultiaddr(fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", p2pPortAlt))
-	cc.host.Peerstore().AddAddr(cc2.host.ID(), addr, peerstore.TempAddrTTL)
+	//addr, _ := ma.NewMultiaddr(fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", p2pPort))
+	addr2, _ := ma.NewMultiaddr(fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", p2pPortAlt))
+	cc.host.Peerstore().AddAddr(cc2.host.ID(), addr2, peerstore.TempAddrTTL)
 
 	err := cc.AddPeer(cc2.host.ID())
 	if err != nil {
