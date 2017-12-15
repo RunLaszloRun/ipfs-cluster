@@ -28,7 +28,7 @@ var testingClusterCfg = []byte(`{
 
 var testingRaftCfg = []byte(`{
     "data_folder": "raftFolderFromTests",
-    "wait_for_leader_timeout": "15s",
+    "wait_for_leader_timeout": "30s",
     "commit_retries": 1,
     "commit_retry_delay": "1s",
     "network_timeout": "2s",
