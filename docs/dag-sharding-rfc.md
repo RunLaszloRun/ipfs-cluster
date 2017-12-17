@@ -1,40 +1,47 @@
 # Introduction
+
 This document is a rough draft of an RFC for supporting sharded dags in ipfs-cluster.  After these ideas become more concrete, a little more thoroughly researched and have had time to incorporate changes suggested by ipfs-cluster contributors the goal is to include this RFC in ipfs/notes to get comments from the rest of the ipfs community.
 
 This document outlines motivations for sharding dags across the nodes of an ipfs-cluster, and provides suggestions on development paths to achieve the motivated goals.  It begins by making the strongest assumptions about the data, starting with familiar unixfs dags describing ipfs files that can be stored on any single node's repo, and working up to a discussion of arbitrary ipld dags that are too large to fit on any node's repo.
 
 # Motivation
+
 There are two primary motivations for adding data sharding to ipfs-cluster.  See the WIP use cases documents in PR #215, issue #212, and posts on the discuss.ipfs forum (ex: https://discuss.ipfs.io/t/ubuntu-archive-on-top-of-ipfs/1579 and https://discuss.ipfs.io/t/segmentation-file-in-ipfs-cluster/1465/2 and https://discuss.ipfs.io/t/when-file-upload-to-node-that-can-ipfs-segmentation-file-to-many-nodes/1451) for some more context.  (TODO -- investigate b5/data-together use cases and document whether this shows up there, if so add to use case doc + link here)
 
 ## Motivation 1: store files too big for a single node
+
 This is one of the most requested features for ipfs-cluster.  ipfs-pack (https://github.com/ipfs/ipfs-pack) exists to fill a similar need by allowing data stored in a POSIX filesystem to be referenced from an ipfs-node's datastore without acutally copying all of the data into the node's repo.  However certain use cases require functionality beyond ipfs-pack. For example, what if a cluster of nodes needs to download a large file bigger than any of its nodes' individual machines' disk size?  In this case using ipfs-pack is not enough, such massive files would not fit on a single node's storage device and coordination between nodes to store the file becomes essential.
 
 Storing large files is a feature that would serve many use cases, the more general ability to store large ipld dags of arbitrary structure has the potential to support others.  As an example consider importing a cryptocurrency ledger to an ipfs cluster when no one node could hold the entire dag.
 
 ## Motivation 2: store files with different replication strategies for fault tolerance
-This feature is also frequently requested, including in the original thread leading to the creation of ipfs-cluster (See issue #1), and in @raptortech-js 's thorough discussion in issue #9.  The idea is to bring RAID modes of storage, including modes that incorporate space-efficient FEC techniques, to provide better fault tolerance of storage.  This would open up ipfs-cluster to new usage patterns, especially storing archives with infrequent updates and long storage periods.
+
+This feature is also frequently requested, including in the original thread leading to the creation of ipfs-cluster (See issue #1), and in @raptortech-js 's thorough discussion in issue #9.  The idea is to use sharding to incorporate space-efficient replication techniques to provide better fault tolerance of storage.  This would open up ipfs-cluster to new usage patterns, especially storing archives with infrequent updates and long storage periods.
 
 Again, while files storage will benefit from efficient, fault tolerant encodings, these properties are potentially also quite useful for storing arbitrary merkle dags. 
 
 # Basic sharding overview
-## Problem scope and simplifying assumptions
-The following takes key ideas from @hsanjuan's proposal in the comments reviewing PR #268.  To implement sharding, cluster must be able to split cids belonging to a single file among different cluster peers.  A first possible approach is to track the cid of every block of file data, however two complications present themselves.  First, if the file breaks down into many blocks then the cluster state risks growing too large tracking all the cids.  Second, under this approach cluster does not track the entire dag built by ipfs to store the file.  Ideally the entire dag can be somehow stored in ipfs cluster so that queries on cids in the dag receive the correct responses from the cluster, i.e. the same response that a single ipfs node storing the entire file would give.
 
-Our approach at resolving these issues makes use of the following assumptions.  There is an ipld-dag that needs to be sharded, we assume:
-1. The "data" nodes of the dag, i.e. the bulky nodes that needs sharding, are leaves
-2. The rest of the dag, i.e. non-leaf nodes, can all fit within any single node's ipfs repo
+To add a file ipfs must "import" it.  ipfs chunks the file's raw bytes and builds a merkle dag out of these chunks to organize the data for storage in the ipfs repo. The format of the merkle dag nodes, the way the chunks are produced and the layout of the dag depend on configurable strategies. Usually ipfs represents the data added as a tree which mimics a unix-style hierarchy so that the data can be directly translated into a unix-like filesystem representation.
 
-Assuming the dag in question is an ipfs files dag, then 1 is satisfied by default.  We assume 2 throughout the rest of this section and the next.  We revist these assumptions and some possible sharding implementations that do not make them in the Complications section below.
+Regardless of the chunking or layout strategy, importing a file can be viewed abstractly as a process that takes in a stream of data and outputs a stream of dag nodes, or more precisely "blocks", which is the term for the representation of dag nodes actually used for storage.  As blocks represent dag nodes they contain links to other blocks.  Together these blocks and their links determine the structure of the dag built by the importing process.  Furthermore these blocks are content-addressed by ipfs, which resolves blocks by these addresses upon user request.  Although the current imorting process adds all blocks corresponding to a file to a single ipfs node, this is not important for preserving the dag structure.  ipfs nodes advertise the address of every block added to their storage repo.  If a dag's blocks exist across multiple ipfs peers the individual blocks can readily be discovered by any peer and the information the blocks carry can be put back together.  This location flexibility makes partitioning a file's data at the block level an attractive mechanism for implementing sharding in ipfs-cluster.
+
+Therefore we propose that sharding in ipfs-cluster amounts to allocating a stream of blocks among different ipfs nodes.  Cluster should aim to do so:
+1. Efficiently: best utilizing the resources available in a cluster as provided by the underlying ipfs nodes
+2. Lightly: the cluster state should not carry more information than relevant to cluster, e.g. no more than is relevant for coordinating allocation of collections of blocks
+3. Cleverly: the allocation of blocks might benefit from the information provided by the dag layout or ipld-format of the dag nodes.  For example cluster should eventually support grouping together logical subgraphs of the dag.
+
+On a first approach we aim for a simple layout and format-agnostic strategy which simply groups blocks output from the importing process into a size-based unit, from here on a "shard", that fits within a single ipfs node's storage repo.
 
 ## Implementation
 ### Overview
-In brief the approach is to pin two dags in ipfs-cluster for every sharded file.  The first is the ipfs unixfs dag created upon adding the file to ipfs with one modification: its leaves are not attached.  Some subset and possibly all ipfs-cluster nodes pin this dag making use of the second assumption above and resolving the second complication above.  Additionally ipfs-cluster will collaboratively pin a "cluster-dag" specifically built to track and pin the leaves of the file dag in a way that reflects how data is grouped on cluster nodes.  It is organized in a 3 level tree.  The first level is the cluster-dag root, the second represents the shards into which data is divided with at least one shard per cluster peer.  The third level lists all the cids of leaves of the file dag included in a shard.  From @hsanjuan's original proposal:
+In brief the approach is to pin two dags in ipfs-cluster for every sharded file.  The first is the ipfs unixfs dag created upon adding the file encoded in the blocks, and their links, output by the importing process.  Additionally ipfs-cluster will build a "cluster-dag" specifically built to track and pin the blocks of the file dag in a way that groups data into shards.  Each shard is pinned by (at least) one cluster peer.  The graph of shards is organized in a 3 level tree.  The first level is the cluster-dag root, the second represents the shards into which data is divided with at least one shard per cluster peer.  The third level lists all the cids of blocks of the file dag included in a shard:
 ```
 The root would be like:
 {
-  "parts" : [
-     {"/": <part1>},
-     {"/": <part2>},
+  "shards" : [
+     {"/": <shard1>},
+     {"/": <shard2>},
      ...
    ]
 }
@@ -50,17 +57,17 @@ where each shard looks like:
 }
 
 ```
-Each cluster node recursively pins a shard-node of the cluster-dag, ensuring that the blocks of file data referenced underneath the shard are pinned by that node.  The index of shards can be (non-recursively) pinned on any/all cluster nodes.
+Each cluster node recursively pins a shard-node of the cluster-dag, ensuring that the blocks of file data referenced underneath the shard are pinned by that node.  The index of shards, i.e. the root, can be (non-recursively) pinned on any/all cluster nodes.
 
-With this implementation the cluster can provide the entire original ipfs file dag on request.  For example if a node queries for the root of the original file dag they can get all non-leaf nodes from a single cluster peer.  The parents of the leaves will reference the leaf cids which cluster also provides, as they are all pinned somewhere as children of a shard-node in the cluster-dag.  Note this implementation avoids the first complication mentioned above because the cluster state need only keep track of 1 cid per shard and the root cid of the original dag, which prevents the state size from growing too large.
+With this implementation the cluster can provide the entire original ipfs file dag on request.  For example if an ipfs peer queries for the entire file they first resolve the root node of the dag which must be pinned on some shard.  If the root has child links then ipfs peers in the cluster are guaranteed to resolve them with content, as all blocks are pinned somewhere in the cluster as children of a shard-node in the cluster-dag.  Note that this implementation conforms well to the goal of coordinating "lightly" above because the cluster state need only keep track of 1 cid per shard.  This prevents the state size from growing too large or more complex than necessary for the purpose of allocation.
 
-Under @hsanjuan's original proposal the state format would change slightly to account for linking together the root cid of an ipfs file dag and the cluster-dag pinning its leaves
+The state format would change slightly to account for linking together the root cid of an ipfs file dag and the cluster-dag pinning its leaves
 
 ```
 "<cid>": {
   "name": <pinname>,
   "cid": <cid>,
-  "cluserdag": <cidcluster>,
+  "clusterdag": <cidcluster>,
   "allocations" : []
 }
 "<shard1-cid>": {
@@ -72,20 +79,31 @@ Under @hsanjuan's original proposal the state format would change slightly to ac
 ....
 ```
 
-Under this implementation replication of shards proceeds like replication of an ordinary pinned cid.  If a shard is replicated across the cluster then data is not always lost during a node failure.  To get better guarantees for less extra space we will need to complete the work described in the fault tolerance section.
+Under this implementation replication of shards proceeds like replication of an ordinary pinned cid.  If a shard is replicated across the cluster then data is not always lost during a node failure.  To get better guarantees for less extra space we will need to proceed in the direction of the fault tolerance described in the Future Work section.
 
 
 ### Adding files
-Currently the proposed implementation of basic sharding relies on ipfs-cluster having a lot of control over the process of adding a file to ipfs.  For now we assume that users must add data to be sharded to ipfs-cluster directly to give cluster this control over the insertion process, though later on cluster could ideally handle sharding existing dags using an ipld transform.  The cluster node adding the file will read in a stream of bytes that are then passed to an importer to create an ipfs files dag chunked (size-splitter or rabin-splitter) and layed out (trickle or balanced) per user instruction.  Concurrent with ipfs files dag creation, the importing ipfs-cluster node will oversee construction of a cluster-dag shard node that also references the data leaves of the ipfs files dag.  Once a shard is filled with leaf nodes it must be allocated and pinned to an ipfs-cluster node.  This process continues until both dags are fully constructed and pinned as expected.  There are a few potential mechanisms for transporting the shard from the importing node to the pinning node.  The importing node could add the shard to its ipfs node, pin, signal the pinning node to take over ownership (perhaps by adding to the state via consensus), and finally unpin the data.  Alternatively the importing node could `ipfs block put` and `ipfs pin` on the pinning node by making an RPC to the pinning node's cluster peer.  In this case perhaps the pinning node would check the state to ensure it was actually assigned the pin before running the rpc to completion (TODO -- I am still unclear exactly how consensus and shard transfer should work together, need to go through current implementation).  Note that this will be one of the more involved parts of implementing basic sharding and will almost certainly involve extracting, refactoring and adding features to the dag building functionality of go-ipfs.  See the Complications section for the additional possible hurdles for implementing this when the added file is too big to fit on one ipfs repo.
+Currently the proposed implementation of basic sharding relies on ipfs-cluster having an incoming stream of data that can be read lazily as cluster sends off blocks to remote peers.  This allows sharding files that are too big to fit in a single repo or whose dags are too big to read into memory all at once, as resources can be cleared while streaming occurs.  Only the cids of blocks in the shard need to be maintained to construct the shard node of the cluster-dag, not the entire block or in-memory node structure.  Therefore in our basic sharding implementation we assume that sharded data must be added to ipfs-cluster directly.  This is because, as far as we know, there is not currently a way to access such a stream of blocks belonging to an already-imported-dag without potentially overloading the local ipfs daemon's resources.
+
+The cluster node adding the file will read in a stream of bytes that are then passed to an importer to create an ipfs files dag chunked (size-splitter or rabin-splitter) and layed out (trickle or balanced) per user instruction.  Before importing blocks of each shard the cluster peer calls the `allocate()` function to find the pinning peer for the upcoming shard.  Concurrent with ipfs files dag creation and transmission of the dag's blocks to the allocated cluster peer, the importing ipfs-cluster node will oversee construction of a cluster-dag shard node using the cids of the blocks of the ipfs files dag.  Once a shard is filled with cid references it will also be transmitted and pinned to the allocated ipfs-cluster node.  This process continues until both dags are fully constructed and pinned as expected.  The importing node transmits blocks by calling `ipfs block put` and `ipfs pin` on the pinning node's ipfs daemon via an RPC to the pinning cluster peer.   The pinning node should check the state to ensure it was actually assigned the pin before running the rpc to completion.  Note that this will be one of the more involved parts of implementing basic sharding and will involve extracting, refactoring and adding features to the dag building functionality of go-ipfs.
+
+There will likely be several endpoints entering into the functionality for adding sharded data.  For example, there will be a go endpoint `Add(r io.Reader, opts...)` which just adds arbitrary data. There will be an HTTP endpoint to which users can post multipart data just like it is now posted to ipfs and which creates the unixfs merkle dag.  If dags can be streamed node by node through ipfs safely without possibly overloading the process and its repo, cluster will likely support an AddDag(chan <-*dagNode) endpoint which allocates already-imported-dags.
+
+We will likely abstract the importing functionality into an importer component of cluster.  Following current conventions other cluster modules would communicate with this component over RPC.  However, the RPC module we use does not handle transmitting streams of data so this component and the components containing the endpoints described above will need to expose a stream friendly abstraction, potentially an HTTP endpoint or socket.
+
+As part of polishing this process we will eventually need to polish cluster's UX around sharding.  We will likely want `ipfs-cluster-ctl` commands for adding files, ex `ipfs-cluster-ctl add` beyond the current ipfs proxy endpoint method of adding to cluster and will probably want something like a `--shard` flag for this command.  Additionally "How much room do I have in my cluster?" is a very predictable question that users importing huge files will want to know.  We should add cluster cli tools (something like ipfs metrics, or the still-unmade connectivity-graph) that inform users how much space they have available throughout the entire cluster, and the largest recommended file the cluster can ingest.  Perhaps later on we can get even fancier and include predictions of insertion time, and a visualization of how many shards of what size will be added.
 
 
-# Fault tolerance
+# Future work
 
-## Background reading
+## Fault tolerance
+Disclaimer: this needs more work and that work will go into its own RFC. This section provides a basis upon which we can build.  It is included to demonstrate that the current sharding model works well for implementing this important extension.  We will bring this effort back into focus once the prerequisite basic sharding discussed above is implemented.
+
+### Background reading
 This [report on RS coding for fault tolerance in RAID-like Systems by Plank](https://web.eecs.utk.edu/~plank/plank/papers/CS-96-332.pdf) is a very straightforward and practical guide.  It has been helpful in planning out how to approach fault tolerance in cluster and will be very helpful when we actually implement.  It has an excellent description of how to implement the algorithm that calculates the code from data, and how to implement recovery.  Furthermore one of his example use case studies include algorithms for initialization of the checksum values that will be useful when replicating very large files.
 
-## Proposed implementation
-### Overview
+### Proposed implementation
+#### Overview
 The general idea of fault tolerant storage is to store your data in such a way that if several machines go down all of your data can be reconstructed.  Of course you could simply store all of your data on every machine in your cluster, but many clever approaches use data sharding and techniques like erasure codes to achieve the same result with fewer bits stored.  A standard approach is to store shards of data across multiple data devices and then store some kind of checksum information in separate, checksum devices.  It is a simple matter to extend the basic sharding implementation above to work well in this paradigm.  When storing a file in a fault tolerant configuration ipfs-cluster, as in basic sharding, will store the ipfs files dag without its leaves and an cluster-dag.  However now the cluster-dag has additional shards not referencing the leaves of the ipfs files dag, but rather to checksum data taken over all the file's data.  For an m out of n encoding:
 
 ```
@@ -111,66 +129,29 @@ Overall this is pretty cool for users because the original dag (recall how basic
 
 We have some options for allowing users to specify this mode.  It could be a cluster specific flag to the "add" endpoint or a config option setting a cluster wide default.
 
-### Importing with checksums
+#### Importing with checksums
 If memory/repo size constraints are not a limiting factor it should be straightforward for the cluster-dag importer running on the adding node to keep a running tally of the checksum values and then allocate them to nodes after getting every data shard pinned.  Note this claim is specific to RS as the coding calculations are simple linear combinations of operations and everything commutes, while I wouldn't be surprised if potential future codes also had this property it is something we'll need to check up on once we get serious about pluggability.
 
 If we are in a situation where shards approach the size of ipfs repo or working memory then we can gather inspiration from the report by Plank, specifically the section "Implementation and Performance Details: Checkpointing Systems".  In this section Plank outlines two algorithms for setting checksum values after the data shards are already stored by sending messages over the network.  From my first read-through the broadcast algorithm looks the most promising.  This algorithm would allow cluster to send shards one at a time to the peer holding a zeroed out checksum shard and then perform successive updates to calculate the checksums, rather than requiring that the cluster-dag importer hold the one shard being filled up for pinning alongside the m checksum shards being calculated.
 
+## Clever sharding
+Future work on sharding should aim to keep parts of the dag that are typically fetched together within the same shard.  This feature should be able to take advantage of particular chunking and layout algorithms, for example grouping together subdags representing packages when importing a file as a linux package archive.  It would also be nice to have some techniqes, possibly pluggable, available for intelligently grouping blocks of an arbitrary dag based on the dag structure.
 
-### Automatic Recovery
-TODO -- I have thoughts about implementing this in cluster that I need to organize and put down.
-
-# Complications
-
-## Files larger than local repos
-
-### Improve cluster UX for large files
-"How much room do I have in my cluster?" is a very predictable question that users importing huge files will want to know.  We should include cluster cli tools (something like ipfs metrics, or the still-unmade connectivity-graph) that inform users how much space they have available, and the largest recommended file the cluster can ingest.  Perhaps later on we can get even fancier and include predictions of insertion time, and a visualization of how many shards of what size will be added.
-
-Although the ipfs add proxy endpoint is the logical place to launch the adding process we could also provide a user friendly command that takes in the option of a network address to add from.  This way cluster could properly manage the connection with a remote server while buffering and potentially blocking for long periods of time and prevent the user from having to do clever unix things to download large files.  Note I don't have much experience with this kind of thing, so maybe wget etc have really good UX for things like this and this would be overkill.
-
-### Challenges adding files
-When files become larger than local repos this becomes challenging for two reasons.  First, the importing node now needs to be able to block the importing process periodically to transfer data over to the pinning peer so that its local resources (ipfs repo and maybe memory) don't get overloaded.  Many related complications also seem likely.  For example if one shard takes up 90% of the node's ipfs repo and if the importing node makes use of its repo for temporary pinning and transfer then the importing node cannot pin its own shard until all other nodes have been served.  Second, I am unclear if either of the two proposed data transfer methods will provide acceptable performance when transferring large amounts of data (e.g. on the order of 10 GB shards).
-
-The first challenge will require rethinking the go-ipfs dag building functionality and on the bright side may contribute to building a versatile foundation for the potential dagger/dex project.  The second challenge is best addressed by evaluating the performance characteristics of both data transfer methods.  Perhaps the ongoing ipfs metrics work will already answer many questions about the first method.  If the second transfer method (libp2p rpc) is a serious contender we should plan on evaluating its performance as part of implementation.  (TODO -- create an issue defining some metrics that we will want to evaluate) (TODO -- see if any existing ipfs metrics are relavent to first method, e.g. measuring remote pin time of dags with many large leaves)
-
-### Collaborative importing
-We could potentially use alternatives to importing the stream on one master node that then sends out shards to the assigned pinning nodes.  One other possibility is "collaborative importing", where the cluster node doing the "add" operation streams the raw data out to the pinning nodes that then do importing and pinning in place.
-
-One potential downside is that importing the ipfs files dag becomes more complex, as there will in general be complex relationships between the dags of different shards. Note this should technically be possible, especially under the assumption that the entire ipfs file dag fits in all ipfs repos.  After each node runs the import they could combine together their ipfs dags (along with their data's relative order in the original stream) into a clever combining function that could construct the correct final graph on a single node.   This would also likely be more difficult to coordinate among nodes, and may be harder to get right in the face of network failures that require one node to restart downloading.  One final downside is that, depending on the splitter used, it may be difficult to efficiently stream data to peers that fits along the original chunk boundaries.
-
-One upside is that the interaction between the ipfs files dag and cluster-dag importing process becomes much more simple.  The original importer could run to completion uninterrupted, and then the node could build the cluster-dag and unpin the leaves from the ipfs files dag.  Althought this wouldn't directly address the issues brought up above it is possible collaborative importing would result in a simpler download process as now downloads and imports are not interleaved.  It also seems likely that, if done right, collaborative importing could be faster overall, as importing would be parallelized across nodes.
-
-
-## Arbitrary dags
-
-TODO -- I have some thoughts on these (many voiced in my looong comment in response to @hsanjuan's proposal), I need to take some time to organize and record them here
-
-### Dags too big to fit in ipfs repo
-
-### Dags with data not in the leaves
-
-### Dags already imported
-
+## Sharding existing dags
+This would require new features in go-ipfs if ipfs-cluster is to stream dag nodes from its local daemon.  Specifically the ipfs api would somehow need to include an endpont that provides a stream of a dag's blocks without overcommitting the daemon's resources (i.e. downloading the whole dag first if the repo is too small).  An effort that will bring sharding existing dags closer to reality is the [CAR (Certified ARchives) project](https://github.com/ipld/specs/pull/51) which aims to define a format for storing dags.  One of its goals as stated in a recent proposal is to explicitly allow users to "Traverse a large dag streamed over HTTP without downloading the entire thing."  Cluster could certainly shard dag nodes extracted from a streamed CAR file, either kept on disk or provided at a location on the network.  CAR integration with go-ipfs could potentially allow resource aware streaming of dag nodes over the ipfs daemon's api so that the sharding cluster peer need only know the dag's root hash.
 
 # Workplan
 
-There is a fair amount that needs to be built, updated and serviced to make all of this work.  Here I am focusing on basic sharding and allowing support for files that wouldn't fit in an ipfs repo.  Fault tolerance and arbitrary dag work should come after this is nailed down.  From current design fault tolerance will be straightforward on top of basic sharding and arbitrary dag support will probably be quite different and difficult regardless of how we implement the basics.
+There is a fair amount that needs to be built, updated and serviced to make all of this work.  Here I am focusing on basic sharding and allowing support for files that wouldn't fit in an ipfs repo.  Fault tolerance, clever sharding and support for sharding existing dags will come after this is nailed down.  
 
-* specialized dag building tools 
-  * cluster-dag ipld-format
-  * cluster-dag importer
-  * fundamental reimagining of go-ipfs dag building
-    * Either ability to build multiple dags at once from two importers (single importer, most likely choice)
-    * Or ability to combine together the dags of arbitrarily split leaves into the dag that would have arisen from importing all leaves at once (collaborative importers, less likely choice)
-    * Could be the basis for an independent dagger library/tool
-* metric sweeps
-  * design metrics (rpc and/or ipfs remote pin unpin, and state size) and sweeps
-  * if we want better performance then we can optimize (rpc) or build new transfer tools out of libp2p
-* improving state component to scale (@hsanjuan from your proposal open questions)
-* simple updates to state format to allow for cluster-dag support
-* probably should work on improving migration framework as significant state changes are in the works
-* adding functionality to ipfs-cluster add ipfs proxy endpoint
-* changing configs and user commands to include `--shard` on add, in general figure out UX to determine when we shard
-* potentially significant modifications to cluster peers signalling that a cid should be pinned (now they may be transferring data via rpc before hand) and so potentially significant modifications to how peers interact with state.  (@hsanjuan, this is something I haven't thought through enough to convince myself it won't be too different from now so I might be overstating the difficulty here)
-
+* Build up a version of the `importers` (aka `dagger` aka `dex`) project that suits cluster's needs (if possible keep it general enough for general use).  In short we want a library that imports data to ipfs dags with arbitrary chunking and layout algorithms.  For our use case it is important that the interfaces support taking in a stream of data and returning a stream of blocks or dag nodes.
+* Figure out how unixFS file/directory data can be streamed (via reading from disk directly or via http POST multipart upload)
+* Implement a cluster importer component.  It will need to provide endpoints that supporting streams as input and output.
+* Create a cluster add endpoint that uses the cluster importer component to split data and create dags.  Put the output blocks into the local ipfs daemon and pin each block with cluster.  This will require figuring out the importer component's api, including the REST API part.
+* Include, in the add endpoint, creation of the cluster-dag and pin blocks by way of pinning shards.  This is still all confined to one cluster peer.  This stage will require defining a cluster ipld-format (if we go that route)
+* Update the state format so that pinned cids reference clusterdags and so that the state differentiates between cids and shards.  Before doing this the state migration code should be generalized so that only a single migration function is needed (Issue #230)
+* Build support for allocation of different cluster-dags to different peers.  This includes implementing RPC transmission of all chunks of a given shard to the allocated peer.
+* Work to make the state format scale to large numbers of cids
+* Add in usability features: don't make sharding default on add endpoint but trigger with --shard, maybe make configs that can set sharding as default or importer defaults, allow add to specify different chunking and importing algorithms like ipfs, ipfs add proxy endpoint can also take in --shard and then calls same functionality as add endpoint, add in tools useful for managing big downloads like reporting the total storage capacity of cluster or the expected download time.
+* Testing should happen throughout and we should have a plan with regards to which tests we run in place early (maybe before we start).  Eventually we will want a huge cluster in the cloud with a few TB of storage for ingesting huge files
+* Move on beyond basic sharding and start design process again to support clever techniques for certain dags/usecases, sharding existing dags, and fault tolerance
